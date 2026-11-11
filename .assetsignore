@@ -3,3 +3,5 @@
 wrangler.jsonc
 README.md
 favicon-512.png
+src
+node_modules

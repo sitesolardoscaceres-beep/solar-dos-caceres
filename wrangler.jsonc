@@ -1,9 +1,18 @@
 {
-  // Configuração do Cloudflare: publica esta pasta como site estático
+  // Configuração do Cloudflare: site estático + pequena API para o admin (src/worker.js)
   "name": "solar-dos-caceres",
+  "main": "src/worker.js",
   "compatibility_date": "2026-11-01",
   "assets": {
     "directory": "./",
-    "not_found_handling": "404-page"
-  }
+    "binding": "ASSETS",
+    "not_found_handling": "404-page",
+    "run_worker_first": ["/api/*"]
+  },
+  "vars": {
+    "GITHUB_REPO": "sitesolardoscaceres-beep/solar-dos-caceres",
+    "GITHUB_BRANCH": "main"
+  },
+  // mantém as variáveis definidas no painel do Cloudflare (ACCESS_*, ADMIN_EMAILS)
+  "keep_vars": true
 }

@@ -111,6 +111,7 @@
   <img id="loginLogo" alt="Solar dos Cáceres">
   <h2>Área de administração</h2>
   <p class="hint" style="text-align:center">Edite preços, textos, contactos e fotos do site.</p>
+  <input type="text" name="username" autocomplete="username" value="admin-solardoscaceres" hidden>
   <div class="f"><label>Chave de acesso</label><input id="gToken" type="password" autocomplete="current-password" placeholder="github_pat_…"></div>
   <button class="btn btn-sage" id="btnLogin">Entrar</button>
   <p id="loginErr" class="msg hide"></p>
@@ -243,7 +244,7 @@
 /* ---------- estado ---------- */
 if (!window.CONTENT) throw new Error('content.js em falta');
 let D = JSON.parse(JSON.stringify(window.CONTENT || {}));
-let year = null, dirty = false, local = false, sha = null;
+let year = null, dirty = false, local = false, sha = null, server = null;   // server = email quando entra por email+código
 const pending = {};               // fotos novas por enviar: path -> base64
 const LS = (k, v) => { try { if (v === undefined) return localStorage.getItem(k); if (v === null) localStorage.removeItem(k); else localStorage.setItem(k, v); } catch(e){ return null; } };
 const $ = s => document.querySelector(s);
@@ -457,7 +458,8 @@ $('#tabs').onclick = e => {
 };
 
 /* ---------- GITHUB ---------- */
-const cfg = () => ({ owner: LS('g_owner'), repo: LS('g_repo'), branch: LS('g_branch') || 'main', token: LS('g_token') });
+const DEF = { owner: 'sitesolardoscaceres-beep', repo: 'solar-dos-caceres', branch: 'main' };   // repositório do site
+const cfg = () => ({ owner: LS('g_owner') || DEF.owner, repo: LS('g_repo') || DEF.repo, branch: LS('g_branch') || DEF.branch, token: LS('g_token') });
 async function gh(path, opts = {}){
   const c = cfg();
   const r = await fetch(`https://api.github.com/repos/${c.owner}/${c.repo}/contents/${path}` + (opts.method ? '' : `?ref=${c.branch}&t=${Date.now()}`), {
@@ -470,6 +472,12 @@ const b64enc = str => btoa(String.fromCharCode(...new TextEncoder().encode(str))
 const b64dec = b64 => new TextDecoder().decode(Uint8Array.from(atob(b64.replace(/\s/g,'')), c => c.charCodeAt(0)));
 const serialize = () => "/* Conteúdo do site Solar dos Cáceres.\n   Este ficheiro é editado pela página admin.html — não é preciso mexer aqui à mão. */\nwindow.CONTENT = " + JSON.stringify(D, null, 2) + ";\n";
 
+async function loadServer(){
+  const r = await fetch('/api/content', { credentials: 'same-origin', cache: 'no-store' });
+  if (!r.ok) throw new Error('Não foi possível ler o conteúdo (' + r.status + ')');
+  const f = await r.json(); sha = f.sha;
+  const m = f.text.match(/window\.CONTENT\s*=\s*([\s\S]*);\s*$/); if (m) D = JSON.parse(m[1]);
+}
 async function loadRemote(){
   const f = await gh('content.js');
   sha = f.sha;
@@ -485,6 +493,23 @@ async function save(){
     return;
   }
   const btn = $('#btnSave'); btn.disabled = true; btn.textContent = 'A guardar…';
+  if (server){
+    try {
+      const images = Object.entries(pending).map(([path, b64]) => ({ path, b64 }));
+      const r = await fetch('/api/save', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: serialize(), sha, images }) });
+      const res = await r.json().catch(() => ({}));
+      if (!r.ok) throw Object.assign(new Error(res.error || r.status), { status: r.status });
+      Object.keys(pending).forEach(k => delete pending[k]);
+      sha = res.sha; setDirty(false);
+      toast('Guardado! O site fica atualizado dentro de 1 a 2 minutos.');
+    } catch(err){
+      if (err.status === 409) toast('O conteúdo foi alterado noutro lado. Recarregue a página e repita.', true);
+      else if (err.status === 401) toast('A sessão expirou. Recarregue a página e entre de novo.', true);
+      else toast('Não foi possível guardar: ' + err.message, true);
+      btn.textContent = 'Guardar alterações';
+    } finally { btn.disabled = false; }
+    return;
+  }
   try {
     const c = cfg();
     for (const [path, b64] of Object.entries(pending)){
@@ -508,8 +533,8 @@ addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && e.key === 's'
 function start(){
   $('#login').classList.add('hide'); $('#app').classList.remove('hide');
   $('#topLogo').src = IMG(D.logo, 200);
-  $('#mode').innerHTML = local ? 'Modo local' : `Ligado · <a href="#" id="logout">Terminar sessão</a>`;
-  if (!local) $('#logout').onclick = e => { e.preventDefault(); LS('g_token', null); location.reload(); };
+  $('#mode').innerHTML = local ? 'Modo local' : server ? `${esc(server)} · <a href="/cdn-cgi/access/logout" id="logout">Sair</a>` : `Ligado · <a href="#" id="logout">Terminar sessão</a>`;
+  if (!local && !server) $('#logout').onclick = e => { e.preventDefault(); LS('g_token', null); location.reload(); };
   renderYears(); bindFields(); renderRooms(); renderPhotos(); setDirty(false);
 }
 async function login(){
@@ -531,7 +556,14 @@ $('#btnLocal').onclick = () => { local = true; start(); };
   $('#gOwner').value = c.owner || ''; $('#gRepo').value = c.repo || ''; $('#gBranch').value = c.branch;
   if (location.protocol === 'file:'){ local = true; start(); return; }
   $('#btnLocal').classList.add('hide');                                        // online: sem modo local          // a abrir o ficheiro no computador
-  if (c.owner && c.repo && c.token) login(); else $('#login').classList.remove('hide');
+  // 1) entrada por email + código (Cloudflare Access)
+  fetch('/api/session', { credentials: 'same-origin', cache: 'no-store' })
+    .then(r => r.ok ? r.json() : Promise.reject(r.status))
+    .then(async s => { server = s.email; await loadServer(); start(); })
+    .catch(() => {                                                             // 2) alternativa: chave guardada neste browser
+      server = null;
+      if (c.owner && c.repo && c.token) login(); else $('#login').classList.remove('hide');
+    });
 })();
 </script>
 </body>
