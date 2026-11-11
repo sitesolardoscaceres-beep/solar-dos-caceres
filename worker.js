@@ -7,13 +7,16 @@
  *
  * Variáveis (Settings → Variables and Secrets):
  *   GITHUB_TOKEN        (secret)  chave fine-grained com Contents: Read and write
+ *   ADMIN_PASSWORD      (secret)  palavra-passe do admin (mín. 10 caracteres)
+ *   — opcional, em vez da palavra-passe: Cloudflare Access (email + código) —
  *   ACCESS_TEAM_DOMAIN  (texto)   ex: solardoscaceres.cloudflareaccess.com
  *   ACCESS_AUD          (texto)   "Application Audience (AUD) Tag" da aplicação Access
- *   ADMIN_EMAILS        (texto, opcional) emails autorizados, separados por vírgulas
+ *   ADMIN_EMAILS        (texto)   emails autorizados, separados por vírgulas
  */
 
-const json = (data, status = 200) =>
-  new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' } });
+const json = (data, status = 200, extra = {}) =>
+  new Response(JSON.stringify(data), { status, headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store', ...extra } });
+const SESSION_DAYS = 60;
 
 export default {
   async fetch(req, env) {
@@ -28,11 +31,28 @@ export default {
 
 /* ------------------------------------------------------------------ API */
 async function api(req, env, url) {
-  if (!env.ACCESS_TEAM_DOMAIN || !env.ACCESS_AUD || !env.GITHUB_TOKEN)
+  const hasAccess = !!(env.ACCESS_TEAM_DOMAIN && env.ACCESS_AUD);
+  const hasPassword = !!(env.ADMIN_PASSWORD && env.ADMIN_PASSWORD.length >= 10);
+  if (!env.GITHUB_TOKEN || (!hasAccess && !hasPassword))
     return json({ error: 'not-configured' }, 503);
 
-  const email = await verifyAccess(req, env);
-  if (!email) return json({ error: 'not-authenticated' }, 401);
+  /* entrar / sair com palavra-passe */
+  if (url.pathname === '/api/login' && req.method === 'POST') {
+    if (!hasPassword) return json({ error: 'not-configured' }, 503);
+    const { password } = await req.json().catch(() => ({}));
+    if (typeof password !== 'string' || !(await safeEqual(password, env.ADMIN_PASSWORD))) {
+      await new Promise(r => setTimeout(r, 1500));               // trava tentativas repetidas
+      return json({ error: 'wrong-password' }, 401);
+    }
+    const exp = Math.floor(Date.now() / 1000) + SESSION_DAYS * 86400;
+    const cookie = `${exp}.${await hmac(env, String(exp))}`;
+    return json({ ok: true }, 200, { 'set-cookie': `sdc_admin=${cookie}; Path=/api; Max-Age=${SESSION_DAYS * 86400}; HttpOnly; Secure; SameSite=Strict` });
+  }
+  if (url.pathname === '/api/logout' && req.method === 'POST')
+    return json({ ok: true }, 200, { 'set-cookie': 'sdc_admin=; Path=/api; Max-Age=0; HttpOnly; Secure; SameSite=Strict' });
+
+  const email = (hasAccess && await verifyAccess(req, env)) || (hasPassword && await verifySession(req, env));
+  if (!email) return json({ error: 'not-authenticated', mode: hasPassword ? 'password' : 'access' }, 401);
 
   const gh = github(env);
 
@@ -131,6 +151,27 @@ async function verifyAccess(req, env) {
     if (!allowed.includes(email)) return null;
   }
   return email || 'admin';
+}
+
+/* ------------------------------------------------- sessão (palavra-passe) */
+async function hmac(env, msg) {
+  const key = await crypto.subtle.importKey('raw', new TextEncoder().encode('sdc|' + env.ADMIN_PASSWORD + '|' + env.GITHUB_TOKEN),
+    { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+  const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(msg));
+  return btoa(String.fromCharCode(...new Uint8Array(sig))).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+async function safeEqual(a, b) {                                   // comparação em tempo constante
+  const h = async v => new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(v)));
+  const [x, y] = await Promise.all([h(a), h(b)]);
+  let d = 0; for (let i = 0; i < x.length; i++) d |= x[i] ^ y[i];
+  return d === 0;
+}
+async function verifySession(req, env) {
+  const c = (req.headers.get('cookie') || '').match(/(?:^|;\s*)sdc_admin=([^;]+)/)?.[1];
+  if (!c) return null;
+  const [exp, sig] = c.split('.');
+  if (!exp || !sig || +exp < Date.now() / 1000) return null;
+  return (await safeEqual(sig, await hmac(env, exp))) ? 'admin' : null;
 }
 
 /* -------------------------------------------------------------- base64 */

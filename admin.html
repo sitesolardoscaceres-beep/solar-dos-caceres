@@ -111,9 +111,15 @@
   <img id="loginLogo" alt="Solar dos Cáceres">
   <h2>Área de administração</h2>
   <p class="hint" style="text-align:center">Edite preços, textos, contactos e fotos do site.</p>
-  <input type="text" name="username" autocomplete="username" value="admin-solardoscaceres" hidden>
+  <form id="pwBox" class="hide" onsubmit="return false">
+    <input type="text" name="username" autocomplete="username" value="admin-solardoscaceres" hidden>
+    <div class="f"><label>Palavra-passe</label><input id="pw" type="password" autocomplete="current-password"></div>
+    <button class="btn btn-sage" id="btnPw" type="submit">Entrar</button>
+  </form>
+  <div id="keyBox">
   <div class="f"><label>Chave de acesso</label><input id="gToken" type="password" autocomplete="current-password" placeholder="github_pat_…"></div>
   <button class="btn btn-sage" id="btnLogin">Entrar</button>
+  </div>
   <p id="loginErr" class="msg hide"></p>
   <details>
     <summary>Configuração (feita uma vez pelo programador)</summary>
@@ -533,7 +539,8 @@ addEventListener('keydown', e => { if ((e.ctrlKey || e.metaKey) && e.key === 's'
 function start(){
   $('#login').classList.add('hide'); $('#app').classList.remove('hide');
   $('#topLogo').src = IMG(D.logo, 200);
-  $('#mode').innerHTML = local ? 'Modo local' : server ? `${esc(server)} · <a href="/cdn-cgi/access/logout" id="logout">Sair</a>` : `Ligado · <a href="#" id="logout">Terminar sessão</a>`;
+  $('#mode').innerHTML = local ? 'Modo local' : server ? `${server === 'admin' ? 'Sessão iniciada' : esc(server)} · <a href="${server === 'admin' ? '#' : '/cdn-cgi/access/logout'}" id="logout">Sair</a>` : `Ligado · <a href="#" id="logout">Terminar sessão</a>`;
+  if (server === 'admin') $('#logout').onclick = async e => { e.preventDefault(); await fetch('/api/logout', { method: 'POST' }); location.reload(); };
   if (!local && !server) $('#logout').onclick = e => { e.preventDefault(); LS('g_token', null); location.reload(); };
   renderYears(); bindFields(); renderRooms(); renderPhotos(); setDirty(false);
 }
@@ -550,6 +557,19 @@ $('#btnLogin').onclick = login;
 $('#gToken').onkeydown = e => { if (e.key === 'Enter') login(); };
 $('#btnLocal').onclick = () => { local = true; start(); };
 
+function showPassword(){
+  $('#login').classList.remove('hide'); $('#pwBox').classList.remove('hide');
+  $('#keyBox').classList.add('hide'); document.querySelector('#login details').classList.add('hide');
+  $('#pw').focus();
+}
+$('#btnPw').onclick = async () => {
+  const err = $('#loginErr'); err.classList.add('hide');
+  const r = await fetch('/api/login', { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ password: $('#pw').value }) });
+  if (!r.ok){ err.textContent = r.status === 401 ? 'Palavra-passe errada.' : 'Erro ao entrar (' + r.status + ').'; err.classList.remove('hide'); return; }
+  try { const s = await (await fetch('/api/session', { cache: 'no-store' })).json(); server = s.email; await loadServer(); start(); }
+  catch(e){ err.textContent = 'Erro: ' + e.message; err.classList.remove('hide'); }
+};
+
 (function init(){
   $('#loginLogo').src = IMG(D.logo, 200);
   const c = cfg();
@@ -560,9 +580,13 @@ $('#btnLocal').onclick = () => { local = true; start(); };
   fetch('/api/session', { credentials: 'same-origin', cache: 'no-store' })
     .then(r => r.ok ? r.json() : Promise.reject(r.status))
     .then(async s => { server = s.email; await loadServer(); start(); })
-    .catch(() => {                                                             // 2) alternativa: chave guardada neste browser
+    .catch(async status => {
       server = null;
-      if (c.owner && c.repo && c.token) login(); else $('#login').classList.remove('hide');
+      if (status === 401){                                                     // 2) palavra-passe (guardada no Cloudflare)
+        const info = await fetch('/api/session', { cache: 'no-store' }).then(r => r.json()).catch(() => ({}));
+        if (info.mode === 'password'){ showPassword(); return; }
+      }
+      if (c.owner && c.repo && c.token) login(); else $('#login').classList.remove('hide');   // 3) chave neste browser
     });
 })();
 </script>
