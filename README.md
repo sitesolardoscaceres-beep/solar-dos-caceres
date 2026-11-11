@@ -8,3 +8,4 @@ Site estático (HTML/CSS/JS, sem build).
 - `privacidade.html`, `cookies.html`, `termos.html` — páginas legais
 
 Alojamento: Cloudflare Pages ligado a este repositório (cada gravação no admin publica o site em 1–2 minutos).
+
