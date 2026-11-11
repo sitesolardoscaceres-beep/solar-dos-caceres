@@ -3,5 +3,6 @@
 wrangler.jsonc
 README.md
 favicon-512.png
+worker.js
 src
 node_modules

@@ -1,7 +1,7 @@
 {
-  // Configuração do Cloudflare: site estático + pequena API para o admin (src/worker.js)
+  // Configuração do Cloudflare: site estático + pequena API para o admin (worker.js)
   "name": "solar-dos-caceres",
-  "main": "src/worker.js",
+  "main": "worker.js",
   "compatibility_date": "2026-11-01",
   "assets": {
     "directory": "./",
